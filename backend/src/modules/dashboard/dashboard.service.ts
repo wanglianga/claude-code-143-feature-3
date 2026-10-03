@@ -81,6 +81,10 @@ export class DashboardService {
       disputeRate: Number(e.disputeRate),
       injuryJobs: e.injuryJobs,
       injuryRate: Number(e.injuryRate),
+      lateCancelCompensatedJobs: e.lateCancelCompensatedJobs,
+      arbitrationLostCount: e.arbitrationLostCount,
+      depositSurchargeRate: Number(e.depositSurchargeRate),
+      rankPenalty: e.rankPenalty,
       depositBalance: Number(e.depositBalance),
       depositFrozen: Number(e.depositFrozen),
     }));

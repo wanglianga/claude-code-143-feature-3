@@ -40,6 +40,23 @@ export class Enterprise {
   @Column({ type: 'int', default: 0 })
   injuryJobs: number;
 
+  // ---- 临时取消赔付相关画像 ----
+  // 临期取消（开工前 2 小时内）并实际支付赔付的岗位数
+  @Column({ type: 'int', default: 0 })
+  lateCancelCompensatedJobs: number;
+
+  // 企业拒付工人赔付、经仲裁败诉的次数
+  @Column({ type: 'int', default: 0 })
+  arbitrationLostCount: number;
+
+  // 拒付败诉带来的后续发单保证金附加倍率（0 ~ 1.5）
+  @Column({ type: 'decimal', precision: 4, scale: 2, default: 0 })
+  depositSurchargeRate: number;
+
+  // 排序模型罚分（确认临期取消/拒付败诉累计；岗位大厅排序降权）
+  @Column({ type: 'int', default: 0 })
+  rankPenalty: number;
+
   @Column({ type: 'decimal', precision: 5, scale: 4, default: 0 })
   cancelRate: number;
 

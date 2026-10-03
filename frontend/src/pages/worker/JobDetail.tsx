@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { get, post } from '../../api';
 import { useAuth } from '../../auth';
-import { Alert, Badge, RiskLevel, Spinner, StatusBadge, fmtDateTime, fmtMoney } from '../../components/ui';
+import { Alert, Badge, RiskLevel, Spinner, StabilityTag, StatusBadge, fmtDateTime, fmtMoney } from '../../components/ui';
 
 export default function JobDetail() {
   const { id } = useParams();
@@ -86,6 +86,40 @@ export default function JobDetail() {
         </div>
         <p className="muted" style={{ margin: '12px 0 0' }}>{job.description}</p>
       </div>
+
+      {job.stability && (
+        <div className="card">
+          <div className="row">
+            <h2 style={{ margin: 0 }}>企业近期稳定性</h2>
+            <div className="spacer" />
+            <StabilityTag stability={job.stability} />
+          </div>
+          <div className="fab-space" />
+          <div className="kv">
+            <span className="k">统计窗口</span>
+            <span>近 {job.stability.sampleSize || job.stability.windowSize} 个已结束/取消岗位</span>
+            <span className="k">取消率</span>
+            <span className={job.stability.cancelRate >= 0.15 ? '' : 'muted'}>
+              {(Number(job.stability.cancelRate) * 100).toFixed(0)}%（平台警戒线 15%）
+            </span>
+            <span className="k">拒付败诉</span>
+            <span>{job.stability.refusedLost} 次（企业拒付取消补贴、经仲裁判有责）</span>
+            <span className="k">发单排序</span>
+            <span className="small muted">排序模型分 {job.stability.rankScore}（取消率/风险等级/平台罚分越低越靠后）</span>
+          </div>
+          {job.stability.level !== 'STABLE' && (
+            <Alert kind={job.stability.level === 'UNSTABLE' ? 'error' : 'warn'}>
+              <b>稳定性提示：</b>
+              {(job.stability.tips || []).join('；')}。临期被取消时，平台会依据通知时间、你的赴岗位置、签到情况为你生成到场/交通补贴建议，企业拒付可进入平台仲裁。
+            </Alert>
+          )}
+          {job.stability.level === 'STABLE' && (
+            <div className="small muted" style={{ marginTop: 8 }}>
+              该企业近期发单稳定。赴岗途中可在「我的任务 → 任务室」上报位置，若企业临期取消，位置将作为到场/交通补贴的判定依据。
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="card">
         <h2>风险告知</h2>

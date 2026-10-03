@@ -4,6 +4,7 @@ import { config } from './config';
 import {
   User, Enterprise, Job, Assignment, AttendanceEvent, InsurancePolicy,
   JobEvent, InjuryClaim, ChatMessage, Settlement, Appeal, Review,
+  WorkerLocationPing, CancellationCompensation,
 } from './entities';
 import { AuthModule } from './modules/auth/auth.module';
 import { RiskModule } from './modules/risk/risk.module';
@@ -14,6 +15,7 @@ import { JobsModule } from './modules/jobs/jobs.module';
 import { AppealsModule } from './modules/appeals/appeals.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { CancellationsModule } from './modules/cancellations/cancellations.module';
 
 @Module({
   imports: [
@@ -27,6 +29,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
       entities: [
         User, Enterprise, Job, Assignment, AttendanceEvent, InsurancePolicy,
         JobEvent, InjuryClaim, ChatMessage, Settlement, Appeal, Review,
+        WorkerLocationPing, CancellationCompensation,
       ],
       synchronize: true,
       charset: 'utf8mb4',
@@ -43,6 +46,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     AppealsModule,
     ReviewsModule,
     DashboardModule,
+    CancellationsModule,
   ],
 })
 export class AppModule {}

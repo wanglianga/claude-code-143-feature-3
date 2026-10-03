@@ -20,7 +20,9 @@ export default function ManageJobs() {
     setError('');
     try {
       const r = await post(`/jobs/${cancelTarget.id}/cancel`, { reason });
-      setMsg(`岗位已取消：罚没保证金 ¥${r.forfeit}，释放 ¥${r.released}，影响工人 ${r.affectedWorkers} 名`);
+      setMsg(r.compensationCount > 0
+        ? `岗位已取消：罚没保证金 ¥${r.forfeit}，释放 ¥${r.released}；平台为 ${r.compensationCount} 名在途/到场工人生成补偿建议，合计 ¥${r.suggestedTotal}，请到「取消赔付」确认或拒付。`
+        : `岗位已取消：罚没保证金 ¥${r.forfeit}，释放 ¥${r.released}，影响工人 ${r.affectedWorkers} 名（无在途/到场工人，未生成补偿建议）`);
       setCancelTarget(null);
       await load();
     } catch (e: any) { setError(e.message); }
@@ -80,6 +82,8 @@ export default function ManageJobs() {
           <Alert kind="warn">
             保证金罚没规则：开工前 2 小时以上取消罚没 20%，2 小时内罚没 50%，已有工人到岗罚没 100%；
             录取工人将被通知且保单作废，取消会计入企业取消率风险画像。
+            <br />若在开工前 24 小时内取消且已有工人在途中或到场，平台还会按通知时间/工人位置/签到/历史取消记录
+            逐人生成<b>到场补贴/交通补贴建议</b>，需到「取消赔付」页确认支付或拒付（拒付将进入仲裁）。
           </Alert>
           <label className="field"><span>取消原因（将告知工人）</span>
             <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />

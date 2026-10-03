@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import {
   User, Enterprise, Job, Assignment, AttendanceEvent, InsurancePolicy,
-  JobEvent, InjuryClaim, ChatMessage, Settlement,
+  JobEvent, InjuryClaim, ChatMessage, Settlement, CancellationCompensation,
 } from '../../entities';
 import { INDUSTRIES } from '../../risk.constants';
 import { haversineMeters } from '../../geo';
@@ -11,6 +11,7 @@ import { verifyQrToken } from '../../qrcode';
 import { config } from '../../config';
 import { SettlementService } from '../settlements/settlement.service';
 import { EnterpriseService } from '../enterprise/enterprise.service';
+import { CancellationsService } from '../cancellations/cancellations.service';
 
 export class CheckInDto {
   assignmentId: number;
@@ -43,8 +44,10 @@ export class TasksService {
     @InjectRepository(InjuryClaim) private claims: Repository<InjuryClaim>,
     @InjectRepository(ChatMessage) private messages: Repository<ChatMessage>,
     @InjectRepository(Settlement) private settlements: Repository<Settlement>,
+    @InjectRepository(CancellationCompensation) private comps: Repository<CancellationCompensation>,
     private settlementService: SettlementService,
     private entService: EnterpriseService,
+    private cancellations: CancellationsService,
   ) {}
 
   // ===================== 任务室聚合 =====================
@@ -62,6 +65,8 @@ export class TasksService {
     const claim = await this.claims.findOne({ where: { assignmentId }, order: { id: 'DESC' } });
     const msgs = await this.messages.find({ where: { assignmentId }, order: { id: 'ASC' }, take: 200 });
     const settlement = await this.settlements.findOne({ where: { assignmentId } });
+    const compensation = await this.comps.findOne({ where: { assignmentId } });
+    const pings = await this.cancellations.listPings(assignmentId);
 
     return {
       assignment,
@@ -80,6 +85,8 @@ export class TasksService {
       claim,
       messages: msgs,
       settlement,
+      compensation,
+      locationPings: pings,
     };
   }
 

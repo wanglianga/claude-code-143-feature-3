@@ -226,7 +226,7 @@ async function login(username, password = '123456') {
     startTime: riskyStartD.toISOString().slice(0, 19), endTime: riskyEndD.toISOString().slice(0, 19),
     headcount: 1, skillRequirement: '安保经验', dailyWage: 320,
   })).body;
-  ok(Number(riskyJob.depositRequired) === 400 * 3, `安保岗保证金被风险倍率上浮至 ¥${riskyJob.depositRequired}（基准400×倍率3.0×1人）`);
+  ok(Number(riskyJob.depositRequired) === 400 * 3.5, `安保岗保证金=基准400×倍率3.5（风险3.0 + 历史拒付败诉附加0.5）×1人 = ¥${riskyJob.depositRequired}`);
   ok(riskyJob.strictConfirmation === true, '岗位自动启用严格现场确认（双人）');
 
   // 用另一个新工人走严格双人确认全流程
@@ -271,6 +271,150 @@ async function login(username, password = '123456') {
   const ind = (await req('GET', '/api/industry-risks', tSupport)).body;
   ok(ind.length === 6 && ind.find((x) => x.industry === 'SECURITY').baseRiskLevel === 5,
     '按六个行业沉淀岗位风险（安保基础风险 5 级、保费费率最高）');
+
+  console.log('── 12. 企业开工前半小时紧急取消：位置上报 → 补偿建议 → 确认到账 ──');
+  // 两名赴岗工人：worker1 + 新注册实名工人；另有一名工人已录取但未出发（无位置）
+  const uname3 = `wcan${Date.now() % 100000}`;
+  const reg3 = await req('POST', '/api/auth/register', null, {
+    username: uname3, password: '123456', name: '赔付新人', phone: '13500000077', role: 'WORKER',
+    idCardNo: '310101199808085555', healthCertUntil: '2027-01-01',
+  });
+  const tCan = reg3.body.token;
+  await req('POST', '/api/auth/worker-profile', tCan, { faceSampleUrl: 'mock://face-can' });
+  const uname4 = `wfar${Date.now() % 100000}`;
+  const reg4 = await req('POST', '/api/auth/register', null, {
+    username: uname4, password: '123456', name: '未出发工人', phone: '13500000066', role: 'WORKER',
+    idCardNo: '310101199909096666',
+  });
+  const tFar = reg4.body.token;
+  await req('POST', '/api/auth/worker-profile', tFar, { faceSampleUrl: 'mock://face-far' });
+
+  const urgentStart = new Date(Date.now() + 25 * 60000);
+  const urgentEnd = new Date(urgentStart.getTime() + 6 * 3600000);
+  const urgentJob = (await req('POST', '/api/jobs', tEnt1, {
+    title: '夜间盘点（半小时后开工）', industry: 'INVENTORY', description: '盘点', location: '虹口龙之梦',
+    lat: 31.2304, lng: 121.4737,
+    startTime: urgentStart.toISOString().slice(0, 19), endTime: urgentEnd.toISOString().slice(0, 19),
+    headcount: 3, skillRequirement: '无', dailyWage: 180,
+  })).body;
+  ok(Number(urgentJob.depositRequired) === 300, `临期盘点岗冻结保证金 ¥${urgentJob.depositRequired}（基准100×1.0×3人）`);
+
+  for (const [tok, ] of [[tWorker1], [tCan], [tFar]]) {
+    await req('POST', `/api/jobs/${urgentJob.id}/apply`, tok, { riskAcknowledged: true });
+  }
+  const urgentApps = (await req('GET', `/api/jobs/${urgentJob.id}/applicants`, tEnt1)).body;
+  const aidByName = {};
+  for (const a0 of urgentApps) {
+    await req('POST', `/api/assignments/${a0.id}/review`, tEnt1, { accept: true });
+    aidByName[a0.worker.name] = a0.id;
+  }
+  const aidOnsite = aidByName['张三'];
+  const aidRoute = aidByName['赔付新人'];
+  const aidHome = aidByName['未出发工人'];
+  ok(aidOnsite && aidRoute && aidHome, '三名工人均被录取');
+
+  // 赴岗位置上报：张三已到现场(~90m)、新人在途中(~2.6km)、第三人不上报
+  const pingOnsite = await req('POST', `/api/assignments/${aidOnsite}/location`, tWorker1, { lat: 31.2311, lng: 121.4741 });
+  const pingRoute = await req('POST', `/api/assignments/${aidRoute}/location`, tCan, { lat: 31.254, lng: 121.4737 });
+  ok(pingOnsite.body.bucket === 'ON_SITE' && pingOnsite.body.distanceMeters <= 300,
+    `服务端按坐标判定张三「已到现场」(${pingOnsite.body.distanceMeters}m，不信任端上档位)`);
+  ok(pingRoute.body.bucket === 'EN_ROUTE' && pingRoute.body.distanceMeters > 1000,
+    `新人「已在途中」(${pingRoute.body.distanceMeters}m)`);
+
+  // 企业开工前 25 分钟取消
+  const urgentCancel = await req('POST', `/api/jobs/${urgentJob.id}/cancel`, tEnt1, { reason: '盘点系统故障' });
+  ok(urgentCancel.body.compensationCount === 2 && urgentCancel.body.affectedWorkers === 3,
+    `取消影响 3 名工人，仅为 2 名有赴岗事实者生成补偿建议（未出发者不赔）`);
+  const compById = Object.fromEntries(urgentCancel.body.compensations.map((c) => [c.assignmentId, c]));
+  const cOnsite = compById[aidOnsite];
+  const cRoute = compById[aidRoute];
+  ok(cOnsite && cOnsite.noticeTier === 'LT_1H' && Number(cOnsite.attendanceAllowance) === 90 && Number(cOnsite.transportAllowance) === 30 && Number(cOnsite.totalAmount) === 120,
+    `开工前 25 分钟·已到现场 → 到场补贴 ¥${cOnsite?.attendanceAllowance}（日结180×50%）+ 交通 ¥${cOnsite?.transportAllowance} = ¥${cOnsite?.totalAmount}`);
+  ok(cRoute && Number(cRoute.attendanceAllowance) === 0 && Number(cRoute.transportAllowance) === 30 && Number(cRoute.totalAmount) === 30,
+    `在途中工人仅交通补贴 ¥${cRoute?.transportAllowance}，不享到场补贴`);
+  ok(!compById[aidHome], '未出发且无位置证据的工人不生成赔付单');
+  ok(/通知时间[\s\S]*工人位置[\s\S]*签到状态[\s\S]*历史取消[\s\S]*建议金额/.test(cOnsite.ruleBreakdown),
+    '补偿建议含通知时间/位置/签到/历史取消规则完整测算说明');
+
+  // 企业确认现场工人赔付 → 立即到账
+  const paid = await req('POST', `/api/compensations/${cOnsite.id}/confirm`, tEnt1, { note: '认可建议，尽快支付' });
+  ok(paid.body.status === 'PAID' && !!paid.body.paidAt && Number(paid.body.totalAmount) === 120,
+    `企业确认后保证金即扣划、工人补贴 ¥${paid.body.totalAmount} 于 ${paid.body.paidAt} 到账并收到通知`);
+  const myComps = (await req('GET', '/api/my/compensations', tWorker1)).body;
+  ok(myComps.some((c) => c.id === cOnsite.id && c.status === 'PAID'), '工人端可查询到已到账的取消补贴');
+
+  // 历史取消规则：再次临期取消且工人到场 → 建议倍率上浮到 1.2
+  const urgent2Start = new Date(Date.now() + 40 * 60000);
+  const urgent2 = (await req('POST', '/api/jobs', tEnt1, {
+    title: '另一处盘点（40 分钟后开工）', industry: 'INVENTORY', description: '盘点', location: '静安寺',
+    lat: 31.2304, lng: 121.4737,
+    startTime: urgent2Start.toISOString().slice(0, 19),
+    endTime: new Date(urgent2Start.getTime() + 5 * 3600000).toISOString().slice(0, 19),
+    headcount: 1, skillRequirement: '无', dailyWage: 100,
+  })).body;
+  await req('POST', `/api/jobs/${urgent2.id}/apply`, tCan, { riskAcknowledged: true });
+  const apps2 = (await req('GET', `/api/jobs/${urgent2.id}/applicants`, tEnt1)).body;
+  const aid2 = apps2[0].id;
+  await req('POST', `/api/assignments/${aid2}/review`, tEnt1, { accept: true });
+  await req('POST', `/api/assignments/${aid2}/location`, tCan, { lat: 31.2308, lng: 121.4744 });
+  const cancel2 = await req('POST', `/api/jobs/${urgent2.id}/cancel`, tEnt1, { reason: '甲方改期' });
+  const c2 = cancel2.body.compensations[0];
+  ok(c2 && Number(c2.priorLateCancels) === 1 && Number(c2.historyMultiplier) === 1.2,
+    `企业已有 1 次临期取消赔付 → 第二次建议补偿倍率 ×${c2?.historyMultiplier}（到场 ¥${c2?.attendanceAllowance} = 100×50%×1.2 + 交通 ¥${c2?.transportAllowance}）`);
+  await req('POST', `/api/compensations/${c2.id}/confirm`, tEnt1, {});
+
+  console.log('── 13. 企业拒付 → 平台仲裁 → 保证金附加倍率 + 排序降权 ──');
+  // 企业拒付在途工人的交通补贴
+  const refuse = await req('POST', `/api/compensations/${cRoute.id}/refuse`, tEnt1, { note: '工人还没到，不该赔钱' });
+  ok(refuse.body.status === 'ARBITRATION', '企业拒付后赔付单进入平台仲裁');
+  const refuseNoReason = await req('POST', `/api/compensations/${cRoute.id}/refuse`, tEnt1, { note: '' });
+  ok(refuseNoReason.status === 400, '已进入仲裁的赔付单不能重复处理');
+
+  // 客服证据包：位置心跳 + 通知档位 + 企业历史
+  const compEv = await req('GET', `/api/support/compensations/${cRoute.id}/evidence`, tSupport);
+  ok(compEv.body.pings.length >= 1 && compEv.body.pings.some((p) => p.bucket === 'EN_ROUTE'),
+    '仲裁证据包包含工人赴岗位置心跳轨迹');
+  ok(compEv.body.compensation.noticeTier === 'LT_1H' && compEv.body.enterprise.id,
+    '证据包包含通知档位与企业历史取消画像');
+
+  // 仲裁判企业有责
+  const beforeEnt = (await req('GET', '/api/support/overview', tSupport)).body.allEnterprises.find((e) => e.name.includes('安心'));
+  const award = await req('POST', `/api/support/compensations/${cRoute.id}/arbitrate`, tSupport, {
+    uphold: false, award: '位置心跳证明工人已在途中 2.6km，企业开工前 25 分钟临时取消事实成立，应付交通补贴。', awardedAmount: 30,
+  });
+  ok(award.body.status === 'ARBITRATION_AWARD_PAY' && Number(award.body.awardedAmount) === 30 && award.body.paidAt,
+    '仲裁判企业有责：交通补贴从保证金扣付并到账');
+  const afterEnt = (await req('GET', '/api/support/overview', tSupport)).body.allEnterprises.find((e) => e.name.includes('安心'));
+  ok(Number(afterEnt.depositSurchargeRate) === Number(beforeEnt.depositSurchargeRate) + 0.5
+    && Number(afterEnt.arbitrationLostCount) === Number(beforeEnt.arbitrationLostCount) + 1
+    && Number(afterEnt.rankPenalty) === Number(beforeEnt.rankPenalty) + 8,
+    `拒付败诉联动：保证金附加 ¥${beforeEnt.depositSurchargeRate}→¥${afterEnt.depositSurchargeRate}、仲裁败诉+1、排序罚分+8（${beforeEnt.rankPenalty}→${afterEnt.rankPenalty}）`);
+
+  // 后续发单保证金叠加附加倍率（按企业当前风险等级 + 仲裁附加动态计算）
+  const entAfterArb = (await req('GET', '/api/enterprise/home', tEnt1)).body.enterprise;
+  const expectedMult = (1 + (Number(entAfterArb.riskLevel) - 1) * 0.5 + Number(entAfterArb.depositSurchargeRate));
+  const expectedDeposit = Math.round(100 * expectedMult);
+  const surJob = (await req('POST', '/api/jobs', tEnt1, {
+    title: '败诉后新发盘点岗', industry: 'INVENTORY', description: '盘点', location: '人民广场',
+    lat: 31.2304, lng: 121.4737,
+    startTime: new Date(Date.now() + 6 * 86400000).toISOString().slice(0, 19),
+    endTime: new Date(Date.now() + 6 * 86400000 + 5 * 3600000).toISOString().slice(0, 19),
+    headcount: 1, skillRequirement: '无', dailyWage: 180,
+  })).body;
+  ok(Number(surJob.depositRequired) === expectedDeposit,
+    `败诉后新岗位保证金被附加：基准100 × 倍率${expectedMult.toFixed(1)}（风险L${entAfterArb.riskLevel}倍率${(1 + (Number(entAfterArb.riskLevel) - 1) * 0.5).toFixed(1)} + 仲裁附加${Number(entAfterArb.depositSurchargeRate).toFixed(1)}）= ¥${surJob.depositRequired}`);
+
+  // 排序模型 + 工人可见稳定性提示
+  const hall = (await req('GET', '/api/jobs', tWorker1)).body;
+  const hallRow = hall.find((j) => j.id === surJob.id);
+  ok(hallRow.stability && hallRow.stability.refusedLost >= 1 && hallRow.stability.level === 'UNSTABLE',
+    `岗位大厅展示企业近期稳定性：拒付败诉 ${hallRow?.stability?.refusedLost} 次，等级 ${hallRow?.stability?.level}，排序分 ${hallRow?.stability?.rankScore}`);
+  const detail = (await req('GET', `/api/jobs/${surJob.id}`, tWorker1)).body;
+  ok(Array.isArray(detail.stability.tips) && detail.stability.tips.some((t) => /取消率|拒付|降权/.test(t)),
+    '岗位详情向报名工人展示近期稳定性提示文案');
+  const entHome = (await req('GET', '/api/enterprise/home', tEnt1)).body.enterprise;
+  ok(Number(entHome.depositSurchargeRate) === 0.5 && Number(entHome.rankPenalty) >= 8,
+    '企业端可见自身保证金附加倍率与排序罚分');
 
   console.log(`\n========== 结果：${pass} 通过 / ${fail} 失败 ==========`);
   process.exit(fail ? 1 : 0);

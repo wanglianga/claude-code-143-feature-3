@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { get } from '../../api';
-import { Badge, RiskLevel, Spinner, fmtDate } from '../../components/ui';
+import { Badge, RiskLevel, Spinner, StabilityTag, fmtDate } from '../../components/ui';
 
 const INDUSTRIES = [
   { key: '', label: '全部' },
@@ -63,12 +63,18 @@ export default function JobHall() {
               <div className="row" style={{ marginTop: 10 }}>
                 <span className="small muted">{j.enterpriseName}</span>
                 <RiskLevel level={j.enterpriseRiskLevel} />
+                {j.stability?.level === 'UNSTABLE' && <Badge tone="red">排序已降权</Badge>}
                 <div className="spacer" />
                 <span className="small">招 {j.headcount} 人</span>
                 <Badge tone={j.status === 'OPEN' ? 'green' : j.status === 'IN_PROGRESS' ? 'blue' : 'orange'}>
                   {j.status === 'OPEN' ? '招募中' : j.status === 'FULL' ? '已报满' : '作业中'}
                 </Badge>
               </div>
+              {j.stability && j.stability.level !== 'STABLE' && (
+                <div style={{ marginTop: 8 }}>
+                  <StabilityTag stability={j.stability} size="sm" />
+                </div>
+              )}
             </Link>
           ))}
         </div>

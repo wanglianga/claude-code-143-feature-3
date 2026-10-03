@@ -10,3 +10,6 @@ export { ChatMessage } from './chat-message.entity';
 export { Settlement } from './settlement.entity';
 export { Appeal } from './appeal.entity';
 export { Review } from './review.entity';
+export { WorkerLocationPing } from './worker-location-ping.entity';
+export { CancellationCompensation } from './cancellation-compensation.entity';
+export type { CompensationStatus, CompensationKind } from './cancellation-compensation.entity';

@@ -4,9 +4,10 @@ import { Repository, DataSource, In } from 'typeorm';
 import {
   User, Enterprise, Job, Assignment, Review, AttendanceEvent, Settlement, InsurancePolicy,
 } from '../../entities';
-import { IndustryKey, INDUSTRIES, depositMultiplier, strictConfirmationRequired } from '../../risk.constants';
+import { IndustryKey, INDUSTRIES, depositMultiplierWithSurcharge, strictConfirmationRequired } from '../../risk.constants';
 import { EnterpriseService } from '../enterprise/enterprise.service';
 import { TasksService } from '../tasks/tasks.service';
+import { CancellationsService } from '../cancellations/cancellations.service';
 
 export class CreateJobDto {
   title: string;
@@ -44,6 +45,7 @@ export class JobsService {
     @InjectRepository(InsurancePolicy) private policies: Repository<InsurancePolicy>,
     private entService: EnterpriseService,
     private tasksService: TasksService,
+    private cancellations: CancellationsService,
   ) {}
 
   /** 企业发单：按行业风险与企业风险等级计算保证金，发单时冻结 */
@@ -58,7 +60,8 @@ export class JobsService {
     if (!dto.headcount || dto.headcount < 1) throw new BadRequestException('招聘人数至少为 1');
     if (!(Number(dto.dailyWage) > 0)) throw new BadRequestException('日结工资必须大于 0');
 
-    const multiplier = depositMultiplier(ent.riskLevel);
+    // 保证金倍率 = 企业风险等级倍率 + 取消赔付仲裁败诉附加倍率
+    const multiplier = depositMultiplierWithSurcharge(ent.riskLevel, Number(ent.depositSurchargeRate || 0));
     const depositRequired = Math.round(industry.baseDeposit * multiplier * dto.headcount);
     const strict = strictConfirmationRequired(ent.riskLevel);
 
@@ -113,7 +116,17 @@ export class JobsService {
     const jobs = await qb.getMany();
     const ents = await this.enterprises.find();
     const entMap = new Map(ents.map((e) => [e.id, e]));
-    return jobs.map((j) => this.decorateJob(j, entMap.get(j.enterpriseId)));
+    // 排序模型：按企业近期稳定性预取稳定性画像（每个企业只算一次）
+    const stabMap = new Map<number, any>();
+    await Promise.all(ents.map(async (e) => {
+      stabMap.set(e.id, await this.cancellations.stabilityOfEnterprise(e.id));
+    }));
+    const decorated = jobs.map((j) => this.decorateJob(j, entMap.get(j.enterpriseId), stabMap.get(j.enterpriseId)));
+    // 稳定性分数降序（稳定企业靠前），同分按开工时间升序
+    decorated.sort((a, b) =>
+      (b.stability?.rankScore ?? 0) - (a.stability?.rankScore ?? 0) ||
+      new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+    return decorated;
   }
 
   async listByEnterprise(enterpriseId: number) {
@@ -132,7 +145,8 @@ export class JobsService {
     const job = await this.jobs.findOne({ where: { id: jobId } });
     if (!job) throw new NotFoundException('岗位不存在');
     const ent = await this.enterprises.findOne({ where: { id: job.enterpriseId } });
-    const base = this.decorateJob(job, ent);
+    const stability = await this.cancellations.stabilityOfEnterprise(job.enterpriseId);
+    const base = this.decorateJob(job, ent, stability);
     const accepted = await this.assignments.find({ where: { jobId, status: 'ACCEPTED' } });
     const workers = await Promise.all(accepted.map((a) => this.workerCard(a.workerId)));
     let myApplication: Assignment | null = null;
@@ -241,7 +255,8 @@ export class JobsService {
     return Promise.all(list.map(async (a) => ({ ...a, worker: await this.workerCard(a.workerId) })));
   }
 
-  /** 企业取消岗位：保证金罚没（临近开工罚金更高），释放余额，通知录取工人 */
+  /** 企业取消岗位：保证金罚没（临近开工罚金更高），释放余额，通知录取工人；
+   *  同时按 通知时间/工人位置/签到/历史取消规则 为在途或到场工人生成补偿建议 */
   async cancelJob(jobId: number, enterpriseId: number, reason: string) {
     const job = await this.jobs.findOne({ where: { id: jobId } });
     if (!job || job.enterpriseId !== enterpriseId) throw new ForbiddenException();
@@ -252,8 +267,9 @@ export class JobsService {
       where: { jobId, status: In(['CHECKED_IN', 'WORKING']) },
     });
 
+    const cancelledAt = new Date();
     // 罚金规则：开工前 2 小时内取消罚没 50% 保证金；已到岗罚没 100%
-    const hoursToStart = (new Date(job.startTime).getTime() - Date.now()) / 3600000;
+    const hoursToStart = (new Date(job.startTime).getTime() - cancelledAt.getTime()) / 3600000;
     const ratio = inProgress > 0 ? 1 : hoursToStart < 2 ? 0.5 : 0.2;
     const forfeit = Math.round(Number(job.depositRequired) * ratio);
     const release = Number(job.depositRequired) - forfeit;
@@ -263,7 +279,7 @@ export class JobsService {
 
     job.status = 'CANCELLED';
     job.cancelledBy = enterpriseId;
-    job.cancelledAt = new Date();
+    job.cancelledAt = cancelledAt;
     job.cancelReason = reason || '企业取消';
     await this.jobs.save(job);
 
@@ -281,12 +297,24 @@ export class JobsService {
       }
     }
 
+    // 临期取消：为「在路上 / 已到场」工人按规则生成到场补贴/交通补贴建议
+    const compensations = await this.cancellations.generateForCancellation({
+      job, cancelledAt, reason: reason || '企业取消',
+    });
+    const suggestedTotal = compensations.reduce((s, c) => s + Number(c.totalAmount), 0);
+
     const ent = await this.entService.get(enterpriseId);
     ent.cancelledJobs += 1;
     await this.enterprises.save(ent);
     await this.entService.recomputeRisk(enterpriseId);
 
-    return { job, forfeit, released: release, affectedWorkers: accepted.length + inProgress };
+    return {
+      job, forfeit, released: release,
+      affectedWorkers: accepted.length + inProgress,
+      compensationCount: compensations.length,
+      suggestedTotal,
+      compensations,
+    };
   }
 
   async addPrepayment(jobId: number, enterpriseId: number, amount: number) {
@@ -322,7 +350,7 @@ export class JobsService {
     };
   }
 
-  private decorateJob(job: Job, ent?: Enterprise | null) {
+  private decorateJob(job: Job, ent?: Enterprise | null, stability?: any) {
     const industry = INDUSTRIES[job.industry];
     return {
       ...job,
@@ -330,6 +358,7 @@ export class JobsService {
       industryRiskLevel: industry?.baseRiskLevel,
       enterpriseName: ent?.name || '未知企业',
       enterpriseRiskLevel: ent?.riskLevel ?? 1,
+      stability: stability || null,
     };
   }
 }

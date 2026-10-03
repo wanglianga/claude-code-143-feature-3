@@ -94,7 +94,12 @@ export default function TaskRoom() {
 
       {tab === 'overview' && (
         <>
+          <CompensationCard room={room} isField={isField} />
           <InsuranceCard room={room} />
+
+          {isWorker && canCheckIn && (
+            <LocationPanel room={room} busy={busy} onReported={load} />
+          )}
 
           {isWorker && (canCheckIn || canCheckOut) && (
             <CheckInPanel
@@ -145,6 +150,156 @@ export default function TaskRoom() {
       )}
     </div>
   );
+}
+
+/* ---------------- 取消赔付 ---------------- */
+function CompensationCard({ room, isField }: { room: any; isField: boolean }) {
+  const { user } = useAuth();
+  const c = room.compensation;
+  const [busy2, setBusy2] = useState(false);
+  const [refuseOpen, setRefuseOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [tip, setTip] = useState('');
+
+  if (!c) return null;
+  const decided = c.status !== 'SUGGESTED';
+
+  const confirmPay = async () => {
+    setTip(''); setBusy2(true);
+    try {
+      await post(`/compensations/${c.id}/confirm`, { note: '企业确认平台补偿建议' });
+      window.location.reload();
+    } catch (e: any) { setTip(e.message); } finally { setBusy2(false); }
+  };
+  const refusePay = async () => {
+    setTip(''); setBusy2(true);
+    try {
+      await post(`/compensations/${c.id}/refuse`, { note });
+      window.location.reload();
+    } catch (e: any) { setTip(e.message); } finally { setBusy2(false); }
+  };
+
+  return (
+    <div className="card" style={{ borderColor: 'var(--orange)' }}>
+      <div className="row">
+        <h2 style={{ margin: 0 }}>企业临时取消 · 工人赔付</h2>
+        <div className="spacer" />
+        <StatusBadge status={c.status} />
+      </div>
+      <div className="grid grid-2" style={{ marginTop: 10 }}>
+        <div className="kv">
+          <span className="k">通知档位</span><span>{c.noticeTierLabel}（开工前 {c.minutesToStart} 分钟）</span>
+          <span className="k">工人位置</span><span>{c.locationBucketLabel || c.locationBucket}{c.distanceMeters !== null ? `（距签到点 ${c.distanceMeters}m）` : ''}</span>
+          <span className="k">是否已签到</span><span>{c.checkedIn ? '已四重签到' : '未签到'}</span>
+          <span className="k">历史取消倍率</span><span>此前临期取消 {c.priorLateCancels} 次 → ×{c.historyMultiplier}</span>
+        </div>
+        <div className="kv">
+          <span className="k">到场补贴</span><span className="money">{fmtMoney(c.attendanceAllowance)}</span>
+          <span className="k">交通补贴</span><span className="money">{fmtMoney(c.transportAllowance)}</span>
+          <span className="k">建议/应付合计</span><span className="money" style={{ fontSize: 18 }}>{fmtMoney(c.totalAmount)}</span>
+          {c.awardedAmount && <><span className="k">仲裁裁决金额</span><span className="money">{fmtMoney(c.awardedAmount)}</span></>}
+        </div>
+      </div>
+      <pre className="rule-box" style={{ whiteSpace: 'pre-wrap' }}>{c.ruleBreakdown}</pre>
+
+      {c.enterpriseNote && <div className="small" style={{ color: 'var(--red, #c0392b)' }}>企业意见：{c.enterpriseNote}</div>}
+      {c.arbitrationAward && (
+        <Alert kind="warn"><b>仲裁裁决：</b>{c.arbitrationAward}</Alert>
+      )}
+      {(c.status === 'PAID' || c.status === 'ARBITRATION_AWARD_PAY') && (
+        <Alert kind="ok">✅ 补贴已从企业保证金账户扣划并于 {fmtDateTime(c.paidAt)} 到账，工人已收到平台通知。</Alert>
+      )}
+      {tip && <Alert kind="error">{tip}</Alert>}
+
+      {user?.role === 'ENTERPRISE' && c.status === 'SUGGESTED' && (
+        <div className="row">
+          <span className="small muted">确认后立即从保证金账户扣划给工人；拒付将进入平台仲裁，败诉会影响后续发单保证金与排序。</span>
+          <div className="spacer" />
+          <button className="btn btn-success" disabled={busy2} onClick={confirmPay}>确认支付 {fmtMoney(c.totalAmount)}</button>
+          <button className="btn btn-danger" disabled={busy2} onClick={() => setRefuseOpen(true)}>拒绝支付</button>
+        </div>
+      )}
+      {isField && decided === false && user?.role === 'SUPERVISOR' && (
+        <div className="small muted">等待企业在「岗位管理 · 取消赔付」中确认或拒付。</div>
+      )}
+
+      {refuseOpen && (
+        <Modal title="拒绝支付（将提交平台仲裁）" onClose={() => setRefuseOpen(false)}
+          footer={<button className="btn btn-danger" disabled={busy2 || !note.trim()} onClick={refusePay}>确认拒付并进入仲裁</button>}>
+          <Alert kind="error">
+            拒付后订单进入平台仲裁：客服将依据位置心跳、签到轨迹、通知时间与历史取消记录裁决。
+            若被判有责，除应付补贴外，后续发单保证金附加 +0.5 倍（封顶 +1.5 倍），岗位排序将被降权。
+          </Alert>
+          <Field label="拒付理由（必填，工人与仲裁员可见）">
+            <textarea className="input" rows={3} value={note} onChange={(e) => setNote(e.target.value)} />
+          </Field>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- 工人赴岗位置上报 ---------------- */
+function LocationPanel({ room, busy, onReported }: { room: any; busy: boolean; onReported: () => void }) {
+  const job = room.job;
+  const [lat, setLat] = useState(Number(job.lat));
+  const [lng, setLng] = useState(Number(job.lng));
+  const [msg, setMsg] = useState('');
+  const pings: any[] = room.locationPings || [];
+  const latest = pings[pings.length - 1];
+
+  const quick = (kind: 'home' | 'route' | 'nearby' | 'site') => {
+    if (kind === 'site') { setLat(Number(job.lat) + 0.0007); setLng(Number(job.lng) + 0.0004); }
+    if (kind === 'nearby') { setLat(Number(job.lat) + 0.006); setLng(Number(job.lng) + 0.002); }
+    if (kind === 'route') { setLat(Number(job.lat) + 0.024); setLng(Number(job.lng)); }
+    if (kind === 'home') { setLat(31.0); setLng(121.0); }
+  };
+
+  const send = async () => {
+    setMsg('');
+    try {
+      const r = await post(`/assignments/${room.assignment.id}/location`, { lat, lng });
+      setMsg(`已上报位置：距签到点 ${r.distanceMeters}m（${bucketLabel(r.bucket)}），企业临期取消时将作为补贴依据`);
+      onReported();
+    } catch (e: any) { setMsg(e.message); }
+  };
+
+  return (
+    <div className="card">
+      <h2>赴岗位置上报（取消赔付依据）</h2>
+      <div className="small muted">
+        赴岗途中可多次上报位置。若企业在开工前临时取消，平台将依据通知时间、最后位置（在途中/到场附近/已到现场）与签到状态生成到场或交通补贴建议。
+      </div>
+      {latest && (
+        <div className="small" style={{ margin: '6px 0' }}>
+          最近一次上报：距签到点 <b>{latest.distanceMeters}m</b>（{bucketLabel(latest.bucket)}）· {fmtDateTime(latest.createdAt)}
+        </div>
+      )}
+      <div className="row">
+        <button className="btn btn-sm" onClick={() => quick('route')}>🧪 模拟在途中(~2.6km)</button>
+        <button className="btn btn-sm" onClick={() => quick('nearby')}>🧪 模拟到场附近(~700m)</button>
+        <button className="btn btn-sm" onClick={() => quick('site')}>🧪 模拟已到现场(~90m)</button>
+        <div className="spacer" />
+        <input className="input" style={{ width: 130 }} type="number" step="0.0001" value={lat} onChange={(e) => setLat(Number(e.target.value))} />
+        <input className="input" style={{ width: 130 }} type="number" step="0.0001" value={lng} onChange={(e) => setLng(Number(e.target.value))} />
+        <button className="btn btn-primary btn-sm" disabled={busy} onClick={send}>上报位置</button>
+      </div>
+      {msg && <><div className="fab-space" /><Alert kind="info">{msg}</Alert></>}
+      {pings.length > 0 && (
+        <div className="timeline" style={{ marginTop: 8 }}>
+          {pings.slice().reverse().map((p) => (
+            <div key={p.id} className="t-item small">
+              {fmtDateTime(p.createdAt)} · {Number(p.lat).toFixed(4)},{Number(p.lng).toFixed(4)} · 距签到点 {p.distanceMeters}m（{bucketLabel(p.bucket)}）
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function bucketLabel(b: string) {
+  return ({ ON_SITE: '已到现场', NEARBY: '到场附近', EN_ROUTE: '在途中', AT_HOME: '尚未出发' } as any)[b] || b;
 }
 
 /* ---------------- 保险 ---------------- */

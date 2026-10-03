@@ -37,9 +37,34 @@ export function StatusBadge({ status }: { status: string }) {
     REISSUED: { tone: 'green', text: '裁决补发' },
     ARBITRATION: { tone: 'purple', text: '仲裁中' },
     ARBITRATION_AWARD: { tone: 'purple', text: '仲裁结案' },
+    SUGGESTED: { tone: 'orange', text: '补偿建议待确认' },
+    CONFIRMED: { tone: 'blue', text: '企业已确认' },
+    REFUSED: { tone: 'red', text: '企业拒付' },
+    ARBITRATION_AWARD_PAY: { tone: 'purple', text: '仲裁判付已到账' },
+    ARBITRATION_UPHELD: { tone: 'gray', text: '仲裁驳回赔付' },
   };
   const m = map[status] || { tone: 'gray', text: status };
   return <Badge tone={m.tone}>{m.text}</Badge>;
+}
+
+/** 企业近期取消稳定性提示（工人报名时可见） */
+export function StabilityTag({ stability, size = 'md' }: { stability: any; size?: 'sm' | 'md' }) {
+  if (!stability) return null;
+  const map = {
+    STABLE: { tone: 'green' as const, text: '近期发单稳定' },
+    WATCH: { tone: 'orange' as const, text: '近期取消偏多·留意' },
+    UNSTABLE: { tone: 'red' as const, text: '近期取消/拒付频繁·稳定性差' },
+  };
+  const m = map[stability.level as keyof typeof map] || map.STABLE;
+  return (
+    <span className={size === 'sm' ? 'small' : ''}>
+      <Badge tone={m.tone}>📊 {m.text}</Badge>
+      <span className="small muted" title={(stability.tips || []).join('；')}>
+        近 {stability.sampleSize || stability.windowSize} 单取消率 {(Number(stability.cancelRate) * 100).toFixed(0)}%
+        {stability.refusedLost ? ` · 拒付败诉 ${stability.refusedLost} 次` : ''}
+      </span>
+    </span>
+  );
 }
 
 export function RiskLevel({ level }: { level: number }) {

@@ -32,10 +32,15 @@ export default function MyTasks() {
                 {a.settlement ? (
                   <span className="small">日结应发 <b className={Number(a.settlement.workerPayable) > 0 ? 'money-green' : ''}>{fmtMoney(a.settlement.workerPayable)}</b>
                     <StatusBadge status={a.settlement.status} /></span>
+                ) : a.status === 'CANCELLED' ? (
+                  <span className="small">岗位已被企业取消{''}</span>
                 ) : (
                   <span className="small muted">日结单待完工后生成</span>
                 )}
                 <div className="spacer" />
+                {a.status === 'CANCELLED' && (
+                  <Link className="btn btn-sm btn-warn" to={`/room/${a.id}`}>查看取消赔付 →</Link>
+                )}
                 {['ACCEPTED', 'CHECKED_IN', 'WORKING', 'COMPLETED', 'LEFT_EARLY'].includes(a.status) && (
                   <Link className="btn btn-primary btn-sm" to={`/room/${a.id}`}>进入任务室 →</Link>
                 )}

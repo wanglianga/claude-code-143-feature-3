@@ -203,3 +203,4 @@ tr:last-child td { border-bottom: none; }
 .modal-mask { position: fixed; inset: 0; background: rgba(20,28,45,.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
 .modal { background: #fff; border-radius: 14px; padding: 22px; width: 100%; max-width: 520px; max-height: 88vh; overflow-y: auto; }
 .fab-space { height: 12px; }
+.rule-box { white-space: pre-wrap; background: #fafbfe; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.7; color: var(--ink-2); margin: 10px 0; font-family: "SF Mono", Menlo, Consolas, monospace; }
