@@ -129,6 +129,7 @@ export class AuthService {
       idVerified: !!user.idVerifiedAt,
       healthCertUntil: user.healthCertUntil,
       hasFaceSample: !!user.faceSampleUrl,
+      walletBalance: Number(user.walletBalance || 0),
     };
   }
 }

@@ -7,6 +7,7 @@ import {
 import { IndustryKey, INDUSTRIES, depositMultiplier, strictConfirmationRequired } from '../../risk.constants';
 import { EnterpriseService } from '../enterprise/enterprise.service';
 import { TasksService } from '../tasks/tasks.service';
+import { CompensationService } from '../compensation/compensation.service';
 
 export class CreateJobDto {
   title: string;
@@ -44,6 +45,7 @@ export class JobsService {
     @InjectRepository(InsurancePolicy) private policies: Repository<InsurancePolicy>,
     private entService: EnterpriseService,
     private tasksService: TasksService,
+    private comps: CompensationService,
   ) {}
 
   /** 企业发单：按行业风险与企业风险等级计算保证金，发单时冻结 */
@@ -113,7 +115,18 @@ export class JobsService {
     const jobs = await qb.getMany();
     const ents = await this.enterprises.find();
     const entMap = new Map(ents.map((e) => [e.id, e]));
-    return jobs.map((j) => this.decorateJob(j, entMap.get(j.enterpriseId)));
+    // 排序模型：企业取消率 / 取消赔付拒付 / 风险等级 → 排序分，工人看到更稳定的企业排在前面
+    const stability = await this.comps.stabilityFor([...new Set(jobs.map((j) => j.enterpriseId))]);
+    return jobs
+      .map((j) => {
+        const ent = entMap.get(j.enterpriseId);
+        return {
+          ...this.decorateJob(j, ent),
+          rankScore: ent ? this.comps.rankScore(ent) : 100,
+          enterpriseStability: stability.get(j.enterpriseId) || null,
+        };
+      })
+      .sort((a, b) => (b.rankScore - a.rankScore) || (new Date(a.startTime).getTime() - new Date(b.startTime).getTime()));
   }
 
   async listByEnterprise(enterpriseId: number) {
@@ -125,7 +138,15 @@ export class JobsService {
       .groupBy('a.jobId')
       .getRawMany<{ jobId: number; checkedIn: string }>();
     const map = new Map(counts.map((c) => [Number(c.jobId), Number(c.checkedIn)]));
-    return jobs.map((j) => ({ ...j, appliedCount: undefined, checkedInCount: map.get(j.id) || 0 }));
+    // 取消赔付处理状态汇总（企业端岗位卡片展示）
+    const compGroups = await this.comps.listForEnterprise(enterpriseId);
+    const compMap = new Map(compGroups.map((g: any) => [g.jobId, { status: g.status, totalSuggested: g.totalSuggested, totalFinal: g.totalFinal }]));
+    return jobs.map((j) => ({
+      ...j,
+      appliedCount: undefined,
+      checkedInCount: map.get(j.id) || 0,
+      compensation: compMap.get(j.id) || null,
+    }));
   }
 
   async detail(jobId: number, viewerId?: number) {
@@ -137,7 +158,15 @@ export class JobsService {
     const workers = await Promise.all(accepted.map((a) => this.workerCard(a.workerId)));
     let myApplication: Assignment | null = null;
     if (viewerId) myApplication = await this.assignments.findOne({ where: { jobId, workerId: viewerId } }) || null;
-    return { ...base, acceptedWorkers: workers, myApplication };
+    // 近期稳定性提示：工人报名前可见（取消率已进入排序模型）
+    const stability = await this.comps.stabilityFor([job.enterpriseId]);
+    return {
+      ...base,
+      acceptedWorkers: workers,
+      myApplication,
+      enterpriseStability: stability.get(job.enterpriseId) || null,
+      rankScore: ent ? this.comps.rankScore(ent) : 100,
+    };
   }
 
   // ---- 工人报名：实名 / 资质（健康证）/ 历史评价 / 风险告知 四道门禁 ----
@@ -194,6 +223,8 @@ export class JobsService {
     const ents = await this.enterprises.find();
     const jMap = new Map(jobs.map((j) => [j.id, j]));
     const eMap = new Map(ents.map((e) => [e.id, e]));
+    const myComps = await this.comps.listForWorker(workerId);
+    const compMap = new Map(myComps.map((c: any) => [c.assignmentId, c]));
     const result = [];
     for (const a of list) {
       const job = jMap.get(a.jobId);
@@ -203,6 +234,7 @@ export class JobsService {
         ...a,
         job: this.decorateJob(job, eMap.get(job.enterpriseId)),
         settlement,
+        compensation: compMap.get(a.id) || null,
       });
     }
     return result;
@@ -241,16 +273,17 @@ export class JobsService {
     return Promise.all(list.map(async (a) => ({ ...a, worker: await this.workerCard(a.workerId) })));
   }
 
-  /** 企业取消岗位：保证金罚没（临近开工罚金更高），释放余额，通知录取工人 */
+  /** 企业取消岗位：保证金罚没（临近开工罚金更高），生成工人取消赔付建议，释放余额，通知录取工人 */
   async cancelJob(jobId: number, enterpriseId: number, reason: string) {
     const job = await this.jobs.findOne({ where: { id: jobId } });
     if (!job || job.enterpriseId !== enterpriseId) throw new ForbiddenException();
     if (['COMPLETED', 'CANCELLED'].includes(job.status)) throw new BadRequestException('岗位已结束或已取消');
 
     const accepted = await this.assignments.find({ where: { jobId, status: 'ACCEPTED' } });
-    const inProgress = await this.assignments.count({
+    const arrived = await this.assignments.find({
       where: { jobId, status: In(['CHECKED_IN', 'WORKING']) },
     });
+    const inProgress = arrived.length;
 
     // 罚金规则：开工前 2 小时内取消罚没 50% 保证金；已到岗罚没 100%
     const hoursToStart = (new Date(job.startTime).getTime() - Date.now()) / 3600000;
@@ -267,9 +300,12 @@ export class JobsService {
     job.cancelReason = reason || '企业取消';
     await this.jobs.save(job);
 
-    for (const a of [...accepted, ...await this.assignments.find({
-      where: { jobId, status: In(['CHECKED_IN', 'WORKING']) },
-    })]) {
+    // 取消赔付：按通知时间、工人位置、是否已签到、历史取消规则生成补偿建议
+    // （必须在派单状态改写前生成，以保留工人到岗/在路上的真实状态）
+    const affected = [...accepted, ...arrived];
+    const compensations = await this.comps.generateForJob(job, affected);
+
+    for (const a of affected) {
       a.status = 'CANCELLED';
       await this.assignments.save(a);
       // 岗位取消 → 未生效保单作废；已生效保单保障截止
@@ -286,7 +322,15 @@ export class JobsService {
     await this.enterprises.save(ent);
     await this.entService.recomputeRisk(enterpriseId);
 
-    return { job, forfeit, released: release, affectedWorkers: accepted.length + inProgress };
+    const suggested = compensations.filter((c) => c.status === 'SUGGESTED');
+    return {
+      job,
+      forfeit,
+      released: release,
+      affectedWorkers: affected.length,
+      compensations,
+      compensationTotal: suggested.reduce((s, c) => s + Number(c.suggestedAmount), 0),
+    };
   }
 
   async addPrepayment(jobId: number, enterpriseId: number, amount: number) {

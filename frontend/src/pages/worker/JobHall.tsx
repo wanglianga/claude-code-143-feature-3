@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { get } from '../../api';
-import { Badge, RiskLevel, Spinner, fmtDate } from '../../components/ui';
+import { Badge, RiskLevel, Spinner, StabilityBadge, fmtDate } from '../../components/ui';
 
 const INDUSTRIES = [
   { key: '', label: '全部' },
@@ -42,6 +42,9 @@ export default function JobHall() {
           ))}
         </div>
       </div>
+      <div className="small muted" style={{ margin: '0 2px 10px' }}>
+        排序按平台模型计算：企业取消率、取消赔付拒付记录、风险等级越低，岗位排得越前；卡片展示企业近期稳定性。
+      </div>
 
       {loading ? <Spinner /> : jobs.length === 0 ? (
         <div className="card muted">暂无符合条件的岗位</div>
@@ -63,6 +66,7 @@ export default function JobHall() {
               <div className="row" style={{ marginTop: 10 }}>
                 <span className="small muted">{j.enterpriseName}</span>
                 <RiskLevel level={j.enterpriseRiskLevel} />
+                <StabilityBadge s={j.enterpriseStability} />
                 <div className="spacer" />
                 <span className="small">招 {j.headcount} 人</span>
                 <Badge tone={j.status === 'OPEN' ? 'green' : j.status === 'IN_PROGRESS' ? 'blue' : 'orange'}>

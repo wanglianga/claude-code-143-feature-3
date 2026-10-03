@@ -7,6 +7,7 @@ import {
 import { JobsController } from './jobs.controller';
 import { JobsService } from './jobs.service';
 import { TasksModule } from '../tasks/tasks.module';
+import { CompensationModule } from '../compensation/compensation.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { TasksModule } from '../tasks/tasks.module';
       JobEvent, Settlement, Appeal, Review,
     ]),
     TasksModule,
+    CompensationModule,
   ],
   controllers: [JobsController],
   providers: [JobsService],

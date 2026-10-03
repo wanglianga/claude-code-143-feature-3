@@ -41,6 +41,13 @@ export class TasksController {
     return this.tasks.markNoShow(req.user, Number(id));
   }
 
+  // 工人出发上报位置（“我在路上”）：企业临时取消时作为交通补贴的距离依据
+  @Roles('WORKER')
+  @Post('assignments/:id/en-route')
+  enRoute(@Param('id') id: string, @Body() dto: { lat: number; lng: number }, @Req() req: any) {
+    return this.tasks.enRoute(req.user.sub, Number(id), Number(dto.lat), Number(dto.lng));
+  }
+
   // 现场工作台：主管待确认签到、待处理事件
   @Roles('SUPERVISOR', 'ENTERPRISE')
   @Get('field/board')

@@ -43,6 +43,10 @@ export class User {
   @Column({ length: 255, nullable: true })
   faceSampleUrl: string | null;
 
+  // 工人钱包余额（取消赔付等到账金额，元）
+  @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
+  walletBalance: number;
+
   @CreateDateColumn()
   createdAt: Date;
 }

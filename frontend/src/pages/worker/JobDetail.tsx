@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { get, post } from '../../api';
 import { useAuth } from '../../auth';
-import { Alert, Badge, RiskLevel, Spinner, StatusBadge, fmtDateTime, fmtMoney } from '../../components/ui';
+import { Alert, Badge, RiskLevel, Spinner, StabilityBadge, StatusBadge, fmtDateTime, fmtMoney } from '../../components/ui';
 
 export default function JobDetail() {
   const { id } = useParams();
@@ -58,6 +58,7 @@ export default function JobDetail() {
           <RiskLevel level={job.industryRiskLevel} />
           <StatusBadge status={job.status} />
           {job.strictConfirmation && <Badge tone="red">严格现场确认（双人）</Badge>}
+          <StabilityBadge s={job.enterpriseStability} />
           <div className="spacer" />
           <span className="money" style={{ fontSize: 22 }}>{fmtMoney(job.dailyWage)}<span className="small muted">/班</span></span>
         </div>
@@ -86,6 +87,21 @@ export default function JobDetail() {
         </div>
         <p className="muted" style={{ margin: '12px 0 0' }}>{job.description}</p>
       </div>
+
+      {job.enterpriseStability && (
+        <div className="card">
+          <h2>企业近期稳定性</h2>
+          <Alert kind={job.enterpriseStability.level === 'STABLE' ? 'ok' : job.enterpriseStability.level === 'CAUTION' ? 'warn' : 'error'}>
+            {job.enterpriseStability.hint}。企业取消率与取消赔付记录已进入平台排序模型。
+          </Alert>
+          <div className="row small muted">
+            <span>近 {job.enterpriseStability.recentWindowDays} 天发单 {job.enterpriseStability.recentJobs} 个</span>
+            <span>取消 {job.enterpriseStability.recentCancelled} 个</span>
+            <span>累计取消率 {(Number(job.enterpriseStability.cancelRate) * 100).toFixed(0)}%</span>
+            <span>取消赔付拒付 {job.enterpriseStability.compRefusals} 次</span>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <h2>风险告知</h2>

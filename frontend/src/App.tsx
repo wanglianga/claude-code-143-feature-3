@@ -13,10 +13,12 @@ import PostJob from './pages/enterprise/PostJob';
 import ManageJobs from './pages/enterprise/ManageJobs';
 import JobApplicants from './pages/enterprise/JobApplicants';
 import EntAppeals from './pages/enterprise/EntAppeals';
+import EntCompensations from './pages/enterprise/EntCompensations';
 import FieldBoard from './pages/enterprise/FieldBoard';
 import SupportAppeals from './pages/support/SupportAppeals';
 import AppealDesk from './pages/support/AppealDesk';
 import ClaimsDesk from './pages/support/ClaimsDesk';
+import CompensationDesk from './pages/support/CompensationDesk';
 import RiskOverview from './pages/support/RiskOverview';
 
 const roleNav: Record<string, { to: string; label: string }[]> = {
@@ -31,6 +33,7 @@ const roleNav: Record<string, { to: string; label: string }[]> = {
     { to: '/ent/post', label: '发布需求' },
     { to: '/ent/jobs', label: '岗位管理' },
     { to: '/ent/field', label: '现场工作台' },
+    { to: '/ent/compensations', label: '取消赔付' },
     { to: '/ent/appeals', label: '争议处理' },
   ],
   SUPERVISOR: [
@@ -39,6 +42,7 @@ const roleNav: Record<string, { to: string; label: string }[]> = {
   ],
   SUPPORT: [
     { to: '/support/appeals', label: '申诉工单' },
+    { to: '/support/compensations', label: '取消仲裁' },
     { to: '/support/claims', label: '工伤理赔' },
     { to: '/support/risk', label: '风险画像' },
   ],
@@ -80,10 +84,12 @@ function Shell() {
           <Route path="/ent/jobs" element={<ManageJobs />} />
           <Route path="/ent/jobs/:id/applicants" element={<JobApplicants />} />
           <Route path="/ent/appeals" element={<EntAppeals />} />
+          <Route path="/ent/compensations" element={<EntCompensations />} />
           <Route path="/ent/field" element={<FieldBoard />} />
 
           <Route path="/support/appeals" element={<SupportAppeals />} />
           <Route path="/support/appeals/:id" element={<AppealDesk />} />
+          <Route path="/support/compensations" element={<CompensationDesk />} />
           <Route path="/support/claims" element={<ClaimsDesk />} />
           <Route path="/support/risk" element={<RiskOverview />} />
 

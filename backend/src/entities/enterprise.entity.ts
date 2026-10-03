@@ -40,6 +40,10 @@ export class Enterprise {
   @Column({ type: 'int', default: 0 })
   injuryJobs: number;
 
+  // 取消赔付中企业拒绝支付的次数（影响风险等级与排序）
+  @Column({ type: 'int', default: 0 })
+  compRefusals: number;
+
   @Column({ type: 'decimal', precision: 5, scale: 4, default: 0 })
   cancelRate: number;
 

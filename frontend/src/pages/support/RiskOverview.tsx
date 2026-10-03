@@ -30,7 +30,7 @@ export default function RiskOverview() {
         <h2>企业风险指标（近窗口累计）</h2>
         <table>
           <thead>
-            <tr><th>企业</th><th>风险等级</th><th>发单</th><th>取消率</th><th>有责争议率</th><th>工伤率</th><th>保证金(可用/冻结)</th></tr>
+            <tr><th>企业</th><th>风险等级</th><th>发单</th><th>取消率</th><th>有责争议率</th><th>工伤率</th><th>取消赔付拒付</th><th>保证金(可用/冻结)</th></tr>
           </thead>
           <tbody>
             {d.allEnterprises.map((e: any) => (
@@ -50,6 +50,7 @@ export default function RiskOverview() {
                   {fmtPct(e.injuryRate)}
                   <div className="small muted" style={{ color: e.injuryRate >= 0.1 ? 'var(--red)' : undefined }}>阈值 10%（{e.injuryJobs} 次）</div>
                 </td>
+                <td>{e.compRefusals > 0 ? <Badge tone="red">{e.compRefusals} 次</Badge> : <Badge tone="green">0</Badge>}</td>
                 <td className="small">¥{e.depositBalance} / <span style={{ color: 'var(--orange)' }}>¥{e.depositFrozen}</span></td>
               </tr>
             ))}

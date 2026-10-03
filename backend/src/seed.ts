@@ -3,9 +3,10 @@ import { hash } from 'bcryptjs';
 import { config } from './config';
 import {
   User, Enterprise, Job, Assignment, AttendanceEvent, InsurancePolicy,
-  JobEvent, InjuryClaim, ChatMessage, Settlement, Appeal, Review,
+  JobEvent, InjuryClaim, ChatMessage, Settlement, Appeal, Review, CancelCompensation,
 } from './entities';
 import { INDUSTRIES, depositMultiplier, strictConfirmationRequired } from './risk.constants';
+import { haversineMeters } from './geo';
 
 let ds: DataSource | null = null;
 
@@ -20,7 +21,7 @@ async function dataSource(): Promise<DataSource> {
     database: config.db.database,
     entities: [
       User, Enterprise, Job, Assignment, AttendanceEvent, InsurancePolicy,
-      JobEvent, InjuryClaim, ChatMessage, Settlement, Appeal, Review,
+      JobEvent, InjuryClaim, ChatMessage, Settlement, Appeal, Review, CancelCompensation,
     ],
     charset: 'utf8mb4',
     timezone: '+08:00',
@@ -53,6 +54,11 @@ export async function runSeed() {
     username: 'worker2', passwordHash: pwd, name: '李四', phone: '13800000002', role: 'WORKER',
     // 未实名、无健康证、无人脸样本 —— 用于演示报名门禁与考勤拦截
   }));
+  const worker3 = await users.save(users.create({
+    username: 'worker3', passwordHash: pwd, name: '王五', phone: '13800000003', role: 'WORKER',
+    idCardNo: '310101199208154321', idVerifiedAt: new Date(),
+    healthCertUntil: '2027-06-30', faceSampleUrl: 'seed://face-wangwu',
+  }));
   void worker1;
 
   // ---------- 正常企业 ----------
@@ -66,7 +72,7 @@ export async function runSeed() {
   ent1User.enterpriseId = ent1.id;
   await users.save(ent1User);
 
-  await users.save(users.create({
+  const sup1 = await users.save(users.create({
     username: 'supervisor1', passwordHash: pwd, name: '王主管', phone: '13700000001',
     role: 'SUPERVISOR', enterpriseId: ent1.id, faceSampleUrl: 'seed://face-sup1',
   }));
@@ -174,7 +180,16 @@ export async function runSeed() {
     location: '上海市杨浦区五角场万达',
     dailyWage: 180, startTime: iso(60 * 50), endTime: iso(60 * 56), headcount: 4,
   });
-  const created = await jobs.save([job1, job2, job3, job4, job5, job6]);
+  // 取消赔付演示场景：开工前半小时的盘点任务，一名工人在路上、一名工人已签到到场
+  const job7 = mk(ent1, {
+    title: '华润万家·月末盘点突击', industry: 'INVENTORY',
+    location: '上海市浦东新区张江华润万家超市',
+    description: '月末库存盘点，扫码录入、货架核对。开工前半小时可演示企业临时取消赔付全流程。',
+    dailyWage: 200, mealAllowance: 15,
+    startTime: iso(30), endTime: iso(60 * 6), headcount: 2,
+    status: 'IN_PROGRESS',
+  });
+  const created = await jobs.save([job1, job2, job3, job4, job5, job6, job7]);
 
   // 冻结对应保证金
   for (const j of created) {
@@ -189,7 +204,59 @@ export async function runSeed() {
   demo.prepayment = 300;
   await jobs.save(demo);
 
-  console.log('[seed] 种子数据完成：worker1/worker2/enterprise1/supervisor1/enterprise_risky/support，密码均为 123456');
+  // ---------- 取消赔付演示场景：开工前半小时的盘点任务 ----------
+  // 张三已出发在路上（约 4.3km），王五已签到到场；企业取消后平台将分别生成交通补贴与到场补贴建议
+  const assignments = source.getRepository(Assignment);
+  const attendance = source.getRepository(AttendanceEvent);
+  const policies = source.getRepository(InsurancePolicy);
+  const cancelDemoJob = created[6];
+
+  const enRouteLat = 31.2304;
+  const enRouteLng = 121.4287; // 距签到点约 4.3km
+  const a1 = await assignments.save(assignments.create({
+    jobId: cancelDemoJob.id, workerId: worker1.id, status: 'ACCEPTED',
+    riskAcknowledged: true, appliedAt: iso(-120), acceptedAt: iso(-100),
+    ratingSnapshot: 5, completedJobsCount: 0,
+  }));
+  await attendance.save(attendance.create({
+    assignmentId: a1.id, jobId: cancelDemoJob.id, workerId: worker1.id,
+    kind: 'EN_ROUTE', locationPassed: false,
+    lat: enRouteLat, lng: enRouteLng,
+    distanceMeters: haversineMeters(enRouteLat, enRouteLng, Number(cancelDemoJob.lat), Number(cancelDemoJob.lng)),
+    facePassed: false, supervisorConfirmed: false, qrcodePassed: false,
+    secondConfirmed: false, allPassed: false, failReason: null,
+    eventTime: iso(-20),
+  }));
+  await policies.save(policies.create({
+    assignmentId: a1.id, jobId: cancelDemoJob.id, workerId: worker1.id, enterpriseId: ent1.id,
+    insurerProduct: '雇主责任险·通用A款', coverageWan: cancelDemoJob.insuranceCoverageWan,
+    premium: cancelDemoJob.insurancePremium, status: 'PENDING', jobRiskLevel: 1, enterpriseConfirmed: true,
+  }));
+
+  const a2 = await assignments.save(assignments.create({
+    jobId: cancelDemoJob.id, workerId: worker3.id, status: 'WORKING',
+    riskAcknowledged: true, appliedAt: iso(-130), acceptedAt: iso(-110),
+    ratingSnapshot: 5, completedJobsCount: 0,
+  }));
+  const checkIn = await attendance.save(attendance.create({
+    assignmentId: a2.id, jobId: cancelDemoJob.id, workerId: worker3.id,
+    kind: 'CHECK_IN', locationPassed: true,
+    lat: Number(cancelDemoJob.lat), lng: Number(cancelDemoJob.lng), distanceMeters: 5,
+    facePassed: true, faceScore: 95,
+    supervisorConfirmed: true, confirmedBySupervisorId: sup1.id, confirmedAt: iso(-8),
+    qrcodePassed: true, qrcodeToken: 'SEEDDEMO',
+    secondConfirmed: false, allPassed: true, failReason: null,
+    eventTime: iso(-8),
+  }));
+  await policies.save(policies.create({
+    assignmentId: a2.id, jobId: cancelDemoJob.id, workerId: worker3.id, enterpriseId: ent1.id,
+    insurerProduct: '雇主责任险·通用A款', coverageWan: cancelDemoJob.insuranceCoverageWan,
+    premium: cancelDemoJob.insurancePremium, status: 'ACTIVE',
+    effectiveFrom: iso(-8), activatedByAttendanceId: checkIn.id,
+    jobRiskLevel: 1, enterpriseConfirmed: true,
+  }));
+
+  console.log('[seed] 种子数据完成：worker1/worker2/worker3/enterprise1/supervisor1/enterprise_risky/support，密码均为 123456');
 }
 
 if (require.main === module) {

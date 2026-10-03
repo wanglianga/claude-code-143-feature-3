@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import {
   User, Enterprise, Job, Assignment, AttendanceEvent, InsurancePolicy,
-  JobEvent, InjuryClaim, ChatMessage, Settlement,
+  JobEvent, InjuryClaim, ChatMessage, Settlement, CancelCompensation,
 } from '../../entities';
 import { INDUSTRIES } from '../../risk.constants';
 import { haversineMeters } from '../../geo';
@@ -43,6 +43,7 @@ export class TasksService {
     @InjectRepository(InjuryClaim) private claims: Repository<InjuryClaim>,
     @InjectRepository(ChatMessage) private messages: Repository<ChatMessage>,
     @InjectRepository(Settlement) private settlements: Repository<Settlement>,
+    @InjectRepository(CancelCompensation) private compensations: Repository<CancelCompensation>,
     private settlementService: SettlementService,
     private entService: EnterpriseService,
   ) {}
@@ -62,6 +63,11 @@ export class TasksService {
     const claim = await this.claims.findOne({ where: { assignmentId }, order: { id: 'DESC' } });
     const msgs = await this.messages.find({ where: { assignmentId }, order: { id: 'ASC' }, take: 200 });
     const settlement = await this.settlements.findOne({ where: { assignmentId } });
+    // 出发上报（“我在路上”）与取消赔付单
+    const enRoute = await this.attendance.findOne({
+      where: { assignmentId, kind: 'EN_ROUTE' }, order: { eventTime: 'DESC' },
+    });
+    const compensation = await this.compensations.findOne({ where: { assignmentId } });
 
     return {
       assignment,
@@ -80,6 +86,42 @@ export class TasksService {
       claim,
       messages: msgs,
       settlement,
+      enRoute,
+      compensation,
+    };
+  }
+
+  // ===================== 工人出发上报（“我在路上”） =====================
+  /** 录取后、到岗前可多次上报位置；企业临时取消时以最近一次上报距离计算交通补贴 */
+  async enRoute(workerId: number, assignmentId: number, lat: number, lng: number) {
+    const assignment = await this.assignments.findOne({ where: { id: assignmentId, workerId } });
+    if (!assignment) throw new ForbiddenException('派单不存在或不属于当前工人');
+    if (assignment.status !== 'ACCEPTED') {
+      throw new BadRequestException(`当前状态 ${assignment.status} 不能上报行程（需已录取且未到岗）`);
+    }
+    const job = await this.jobs.findOne({ where: { id: assignment.jobId } });
+    if (!job) throw new NotFoundException('岗位不存在');
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw new BadRequestException('缺少定位坐标');
+
+    const distance = haversineMeters(lat, lng, Number(job.lat), Number(job.lng));
+    const event = await this.attendance.save(this.attendance.create({
+      assignmentId: assignment.id,
+      jobId: job.id,
+      workerId,
+      kind: 'EN_ROUTE',
+      locationPassed: distance <= config.geofenceRadiusMeters,
+      lat, lng,
+      distanceMeters: distance,
+      failReason: null,
+      eventTime: new Date(),
+    }));
+    const km = Math.round(distance / 100) / 10;
+    return {
+      report: event,
+      distanceMeters: distance,
+      message: distance <= config.geofenceRadiusMeters
+        ? `已到达签到点附近（${distance}m），请尽快完成到岗签到`
+        : `行程已上报：当前距岗位约 ${km}km；若企业临时取消，将按此距离生成交通补贴建议`,
     };
   }
 

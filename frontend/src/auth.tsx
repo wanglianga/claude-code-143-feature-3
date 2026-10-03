@@ -12,6 +12,7 @@ export interface AuthUser {
   idVerified: boolean;
   healthCertUntil: string | null;
   hasFaceSample: boolean;
+  walletBalance?: number;
 }
 
 interface AuthState {

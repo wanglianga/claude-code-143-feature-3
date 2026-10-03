@@ -2,7 +2,7 @@ import {
   Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index,
 } from 'typeorm';
 
-export type AttendanceKind = 'CHECK_IN' | 'CHECK_OUT';
+export type AttendanceKind = 'CHECK_IN' | 'CHECK_OUT' | 'EN_ROUTE';
 
 // 四重校验要素：定位 / 人脸 / 现场主管确认 / 签到二维码
 export interface CheckFactors {

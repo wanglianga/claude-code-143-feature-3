@@ -96,6 +96,13 @@ export default function TaskRoom() {
         <>
           <InsuranceCard room={room} />
 
+          {room.compensation && <CompensationCard comp={room.compensation} />}
+
+          {isWorker && a.status === 'ACCEPTED' && (
+            <EnRoutePanel job={room.job} last={room.enRoute} busy={busy}
+              onSubmit={(lat, lng) => act(() => post(`/assignments/${a.id}/en-route`, { lat, lng }))} />
+          )}
+
           {isWorker && (canCheckIn || canCheckOut) && (
             <CheckInPanel
               mode={canCheckIn ? 'in' : 'out'}
@@ -236,6 +243,93 @@ function CheckInPanel({ mode, job, busy, onSubmit }: { mode: 'in' | 'out'; job: 
           {mode === 'in' ? '提交到岗签到' : '提交完工签退'}
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ---------------- 工人出发上报（“我在路上”） ---------------- */
+function EnRoutePanel({ job, last, busy, onSubmit }: { job: any; last: any; busy: boolean; onSubmit: (lat: number, lng: number) => void }) {
+  const [lat, setLat] = useState<number>(Number(job.lat));
+  const [lng, setLng] = useState<number>(Number(job.lng));
+
+  const locate = (offsetKm: number) => {
+    if (offsetKm === 0 && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => { setLat(Number(pos.coords.latitude.toFixed(6))); setLng(Number(pos.coords.longitude.toFixed(6))); },
+        () => {},
+        { timeout: 4000 },
+      );
+      return;
+    }
+    // 演示：模拟在途中（向签到点方向偏移指定公里数）
+    const dLng = offsetKm / (111.32 * Math.cos((Number(job.lat) * Math.PI) / 180));
+    setLat(Number(job.lat));
+    setLng(Number((Number(job.lng) - dLng).toFixed(6)));
+  };
+
+  return (
+    <div className="card">
+      <h2>出发上报（我在路上）</h2>
+      <p className="small muted" style={{ marginTop: 0 }}>
+        出发后上报位置：若企业临时取消岗位，平台将按你最近一次上报位置与岗位的距离生成交通补贴建议。
+      </p>
+      {last && (
+        <Alert kind="info">
+          最近一次上报：{fmtDateTime(last.eventTime)}，距岗位 {(Number(last.distanceMeters) / 1000).toFixed(1)}km
+          {last.locationPassed ? '（已在签到围栏内，请尽快到岗签到）' : ''}
+        </Alert>
+      )}
+      <div className="grid grid-2">
+        <Field label="当前定位坐标">
+          <div className="row">
+            <input className="input" value={lat} onChange={(e) => setLat(Number(e.target.value))} />
+            <input className="input" value={lng} onChange={(e) => setLng(Number(e.target.value))} />
+          </div>
+        </Field>
+        <Field label="快捷模拟">
+          <div className="row">
+            <button className="btn btn-sm" onClick={() => locate(0)}>📍 获取我的定位</button>
+            <button className="btn btn-sm" onClick={() => locate(2)}>🧪 途中 2km</button>
+            <button className="btn btn-sm" onClick={() => locate(5)}>🧪 途中 5km</button>
+            <button className="btn btn-sm" onClick={() => locate(12)}>🧪 途中 12km</button>
+          </div>
+        </Field>
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end' }}>
+        <button className="btn btn-primary" disabled={busy} onClick={() => onSubmit(lat, lng)}>上报「我在路上」</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- 取消赔付（工人视角） ---------------- */
+function CompensationCard({ comp }: { comp: any }) {
+  const kindText: Record<string, string> = { ATTENDANCE: '到场补贴', TRANSPORT: '交通补贴', NONE: '无需补偿' };
+  const statusText: Record<string, { tone: any; text: string }> = {
+    SUGGESTED: { tone: 'orange', text: '平台已生成补偿建议，待企业确认' },
+    PAID: { tone: 'green', text: '补偿已到账（钱包余额）' },
+    ARBITRATION: { tone: 'purple', text: '企业拒绝支付，平台仲裁中' },
+    ARBITRATED_PAID: { tone: 'green', text: '仲裁判付，补偿已到账（钱包余额）' },
+    ARBITRATED_WAIVED: { tone: 'gray', text: '仲裁裁定企业无需支付' },
+    NONE_REQUIRED: { tone: 'gray', text: '未出发，无补偿' },
+  };
+  const st = statusText[comp.status] || { tone: 'gray', text: comp.status };
+  return (
+    <div className="card">
+      <div className="row">
+        <h2 style={{ margin: 0 }}>取消赔付</h2>
+        <Badge tone={comp.kind === 'ATTENDANCE' ? 'purple' : comp.kind === 'TRANSPORT' ? 'blue' : 'gray'}>
+          {kindText[comp.kind] || comp.kind}
+        </Badge>
+        <div className="spacer" />
+        <span className="money" style={{ fontSize: 18 }}>
+          {fmtMoney(comp.finalAmount ?? comp.suggestedAmount)}
+        </span>
+      </div>
+      <Alert kind={st.tone === 'green' ? 'ok' : st.tone === 'gray' ? 'info' : 'warn'}>{st.text}</Alert>
+      <div className="small muted">规则依据：{comp.ruleSnapshot}</div>
+      {comp.rejectReason && <div className="small" style={{ color: 'var(--orange)' }}>企业拒付理由:{comp.rejectReason}</div>}
+      {comp.decisionNote && <div className="small muted">仲裁裁决：{comp.decisionNote}</div>}
     </div>
   );
 }

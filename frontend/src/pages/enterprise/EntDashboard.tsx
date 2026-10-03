@@ -54,6 +54,7 @@ export default function EntDashboard() {
             <span className="k">取消率</span><span>{(Number(e.cancelRate) * 100).toFixed(0)}%（{e.cancelledJobs}/{e.totalJobs}，阈值 15%）</span>
             <span className="k">有责争议率</span><span>{(Number(e.disputeRate) * 100).toFixed(0)}%（{e.lostDisputes} 次有责 / {e.disputedAssignments} 次申诉，阈值 20%）</span>
             <span className="k">工伤率</span><span>{(Number(e.injuryRate) * 100).toFixed(0)}%（{e.injuryJobs} 次，阈值 10%）</span>
+            <span className="k">取消赔付拒付</span><span>{e.compRefusals > 0 ? <Badge tone="red">{e.compRefusals} 次（风险等级 +1，排序降权）</Badge> : '无'}</span>
           </div>
           <div className="fab-space" />
           <div className="small muted">风险画像在发单、取消、申诉裁决、工伤确认后由系统自动重算（近 3 单起计）。</div>

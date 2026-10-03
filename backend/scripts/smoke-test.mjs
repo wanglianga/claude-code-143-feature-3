@@ -272,6 +272,158 @@ async function login(username, password = '123456') {
   ok(ind.length === 6 && ind.find((x) => x.industry === 'SECURITY').baseRiskLevel === 5,
     '按六个行业沉淀岗位风险（安保基础风险 5 级、保费费率最高）');
 
+  console.log('── 12. 企业临时取消赔付：建议生成 → 拒付 → 仲裁 → 排序模型 ──');
+  // 12.1 新企业 + 三名工人：一人在路上（约5km）、一人已签到、一人未出发
+  const entCompName = `entcomp${Date.now() % 100000}`;
+  const regEnt = await req('POST', '/api/auth/register', null, {
+    username: entCompName, password: '123456', name: '盘点企业', phone: '13500000077', role: 'ENTERPRISE',
+    enterpriseName: '准时盘点有限公司',
+  });
+  const tEntComp = regEnt.body.token;
+  await req('POST', '/api/enterprise/deposit/recharge', tEntComp, { amount: 5000 });
+  const mkWorker = async (tag) => {
+    const r = await req('POST', '/api/auth/register', null, {
+      username: `wc${tag}${Date.now() % 100000}`, password: '123456', name: `工人${tag}`, phone: '13500000066', role: 'WORKER',
+      idCardNo: '310101199701011234',
+    });
+    const t = r.body.token;
+    await req('POST', '/api/auth/worker-profile', t, { faceSampleUrl: `mock://face-${tag}` });
+    return t;
+  };
+  const tWA = await mkWorker('a'); // 在路上
+  const tWB = await mkWorker('b'); // 已签到
+  const tWC = await mkWorker('c'); // 未出发
+
+  const compStart = new Date(Date.now() + 30 * 60000); // 开工前半小时取消的场景
+  const compJob = (await req('POST', '/api/jobs', tEntComp, {
+    title: '华润超市·月末盘点（取消赔付演示）', industry: 'INVENTORY', description: '月末盘点', location: '张江华润万家',
+    lat: 31.2304, lng: 121.4737,
+    startTime: compStart.toISOString().slice(0, 19), endTime: new Date(compStart.getTime() + 6 * 3600000).toISOString().slice(0, 19),
+    headcount: 3, skillRequirement: '无', dailyWage: 200,
+  })).body;
+  ok(Number(compJob.depositRequired) === 300, `新企业发盘点岗：保证金 100×1.0×3人 = ¥${compJob.depositRequired}`);
+
+  for (const t of [tWA, tWB, tWC]) await req('POST', `/api/jobs/${compJob.id}/apply`, t, { riskAcknowledged: true });
+  const compApps = (await req('GET', `/api/jobs/${compJob.id}/applicants`, tEntComp)).body;
+  const acc = {};
+  for (const a of compApps) {
+    const r = await req('POST', `/api/assignments/${a.id}/review`, tEntComp, { accept: true });
+    acc[a.worker.name] = r.body.id;
+  }
+  ok(Object.keys(acc).length === 3, '三名工人均被录取（生成待生效保单）');
+
+  // 工人A 出发上报（约 5km）；工人B 完成四重签到；工人C 不动
+  const enroute = await req('POST', `/api/assignments/${acc['工人a']}/en-route`, tWA, { lat: 31.2304, lng: 121.4212 });
+  ok(enroute.status === 201 && enroute.body.distanceMeters > 4500 && enroute.body.distanceMeters < 5500,
+    `工人A 上报「我在路上」，距岗位 ${enroute.body.distanceMeters}m`);
+  const qrC = (await req('GET', `/api/jobs/${compJob.id}/qrcode`, tEntComp)).body.token;
+  const ciB = await req('POST', '/api/attendance/check-in', tWB, {
+    assignmentId: acc['工人b'], lat: 31.2304, lng: 121.4737, qrcodeToken: qrC, facePassed: true,
+  });
+  const confB = await req('POST', `/api/attendance/${ciB.body.attendance.id}/supervisor-confirm`, tEntComp, {});
+  ok(confB.body.nextStep === 'INSURANCE_ACTIVE', '工人B 四重校验通过已签到（保险生效）');
+
+  // 12.2 企业在开工前半小时取消 → 平台生成补偿建议
+  const cancel2 = await req('POST', `/api/jobs/${compJob.id}/cancel`, tEntComp, { reason: '盘点计划临时取消' });
+  const comps = cancel2.body.compensations || [];
+  const compA = comps.find((c) => c.kind === 'TRANSPORT');
+  const compB = comps.find((c) => c.kind === 'ATTENDANCE');
+  const compC = comps.find((c) => c.kind === 'NONE');
+  ok(comps.length === 3 && Number(cancel2.body.compensationTotal) === 90,
+    `取消即生成 3 人补偿建议，应补合计 ¥${cancel2.body.compensationTotal}`);
+  ok(compB && Number(compB.suggestedAmount) === 60 && compB.workerState === 'CHECKED_IN',
+    `已签到工人 → 到场补贴 ¥${compB?.suggestedAmount}（日结 200 × 30%，开工前 1 小时内取消）`);
+  ok(compA && Number(compA.suggestedAmount) === 30 && compA.workerState === 'ON_THE_WAY' && compA.distanceMeters > 4500,
+    `在路上工人 → 交通补贴 ¥${compA?.suggestedAmount}（3–10km 档 20 元 × 临近开工上浮 1.5）`);
+  ok(compC && compC.status === 'NONE_REQUIRED' && Number(compC.suggestedAmount) === 0,
+    '未出发工人 → 无需补偿（取消前 4 小时内无位置上报）');
+  ok(/通知时间/.test(compA.ruleSnapshot) && /在路上/.test(compA.ruleSnapshot) && /已签到/.test(compB.ruleSnapshot),
+    '建议含规则快照：通知时间 + 工人位置 + 是否签到 + 历史取消规则');
+
+  // 12.3 企业拒绝支付 → 进入仲裁，影响保证金与排序
+  const reject = await req('POST', `/api/jobs/${compJob.id}/compensations/reject`, tEntComp, { reason: '认为工人未产生实际损失' });
+  ok(reject.body.arbitrated === 2, '企业拒付 → 2 笔补偿进入仲裁（无需补偿单不受影响）');
+  const homeAfterReject = (await req('GET', '/api/enterprise/home', tEntComp)).body.enterprise;
+  ok(Number(homeAfterReject.compRefusals) === 1 && Number(homeAfterReject.riskLevel) === 2,
+    `拒付计入风险画像：拒付 ${homeAfterReject.compRefusals} 次，风险等级升至 L${homeAfterReject.riskLevel}（后续发单保证金倍率上浮）`);
+
+  // 12.4 客服仲裁：证据齐全 → 判付（可调整金额），强制划扣并到账工人钱包
+  const queue = (await req('GET', '/api/support/compensations', tSupport)).body;
+  const case0 = queue.find((g) => g.job.id === compJob.id);
+  ok(!!case0 && case0.items.some((c) => /未产生实际损失/.test(c.rejectReason || '')) && case0.items.some((c) => /交通补贴/.test(c.ruleSnapshot)),
+    '客服仲裁队列可见案件：拒付理由 + 通知时间/位置/签到规则依据');
+  const arb = await req('POST', `/api/support/jobs/${compJob.id}/compensations/arbitrate`, tSupport, {
+    decision: 'PAY', note: '位置上报与签到记录属实，按平台规则判付，工人A 补贴调整为 40 元',
+    items: [{ id: compA.id, amount: 40 }],
+  });
+  ok(arb.body.paid === 2 && Number(arb.body.total) === 100, `仲裁判付 2 笔合计 ¥${arb.body.total}（张三调整为 40）`);
+  const walletA = (await req('GET', '/api/auth/me', tWA)).body.user.walletBalance;
+  const walletB = (await req('GET', '/api/auth/me', tWB)).body.user.walletBalance;
+  ok(Number(walletA) === 40 && Number(walletB) === 60, `判付到账工人钱包：A ¥${walletA} / B ¥${walletB}`);
+  const homeAfterArb = (await req('GET', '/api/enterprise/home', tEntComp)).body.enterprise;
+  ok(Number(homeAfterArb.lostDisputes) === 1, '仲裁判付计入企业有责争议（影响风险等级与排序）');
+
+  // 12.5 取消率进入排序模型：工人报名时看到近期稳定性提示
+  const job2Start = new Date(Date.now() + 2 * 86400000);
+  const compJob2 = (await req('POST', '/api/jobs', tEntComp, {
+    title: '周末仓库分拣（排序验证）', industry: 'WAREHOUSE', description: '分拣', location: '嘉定物流园',
+    lat: 31.2304, lng: 121.4737,
+    startTime: job2Start.toISOString().slice(0, 19), endTime: new Date(job2Start.getTime() + 8 * 3600000).toISOString().slice(0, 19),
+    headcount: 1, skillRequirement: '无', dailyWage: 240,
+  })).body;
+  ok(Number(compJob2.depositRequired) === 300, `风险等级 L2 后发单保证金上浮：200×1.5×1人 = ¥${compJob2.depositRequired}`);
+  const hall = (await req('GET', '/api/jobs', tWorker1)).body;
+  const hallJob2 = hall.find((j) => j.id === compJob2.id);
+  ok(hallJob2 && hallJob2.enterpriseStability && hallJob2.enterpriseStability.level === 'RISKY'
+    && /取消 1\//.test(hallJob2.enterpriseStability.hint) && /拒付/.test(hallJob2.enterpriseStability.hint),
+    `工人报名前可见稳定性提示：${hallJob2?.enterpriseStability?.hint}`);
+  const idxOf = (pred) => hall.findIndex(pred);
+  const idxNew = idxOf((j) => j.id === compJob2.id);
+  const ent1Idxs = hall.map((j, i) => j.enterpriseName.includes('安心会展') ? i : -1).filter((i) => i >= 0);
+  const riskyIdxs = hall.map((j, i) => j.enterpriseName.includes('雷霆') ? i : -1).filter((i) => i >= 0);
+  ok(Number(hallJob2.rankScore) === 86 && idxNew > Math.max(...ent1Idxs) && idxNew < Math.min(...riskyIdxs),
+    `排序模型生效：取消率+拒付+风险等级 → 排序分 ${hallJob2.rankScore}，排在稳定企业之后、高风险企业之前`);
+
+  // 12.6 第二次取消（历史取消率 ≥15% → 建议上浮 20%）→ 企业确认支付
+  const job3Start = new Date(Date.now() + 90 * 60000);
+  const compJob3 = (await req('POST', '/api/jobs', tEntComp, {
+    title: '午后盘点补位', industry: 'INVENTORY', description: '盘点', location: '张江华润万家',
+    lat: 31.2304, lng: 121.4737,
+    startTime: job3Start.toISOString().slice(0, 19), endTime: new Date(job3Start.getTime() + 5 * 3600000).toISOString().slice(0, 19),
+    headcount: 1, skillRequirement: '无', dailyWage: 200,
+  })).body;
+  await req('POST', `/api/jobs/${compJob3.id}/apply`, tWA, { riskAcknowledged: true });
+  const apps3 = (await req('GET', `/api/jobs/${compJob3.id}/applicants`, tEntComp)).body;
+  const acc3 = (await req('POST', `/api/assignments/${apps3[0].id}/review`, tEntComp, { accept: true })).body;
+  await req('POST', `/api/assignments/${acc3.id}/en-route`, tWA, { lat: 31.2304, lng: 121.4527 }); // 约 2km
+  const cancel3 = await req('POST', `/api/jobs/${compJob3.id}/cancel`, tEntComp, { reason: '门店临时闭店' });
+  const comp3 = (cancel3.body.compensations || [])[0];
+  ok(comp3 && Number(comp3.suggestedAmount) === 12 && /上浮 20%/.test(comp3.ruleSnapshot),
+    `历史取消率 ≥15% → 交通补贴 10 元上浮 20% = ¥${comp3?.suggestedAmount}（历史取消规则）`);
+  const confirm3 = await req('POST', `/api/jobs/${compJob3.id}/compensations/confirm`, tEntComp);
+  ok(confirm3.body.paid === 1 && Number(confirm3.body.total) === 12, `企业确认支付 → 补偿直发工人钱包 ¥${confirm3.body.total}`);
+  const walletA2 = (await req('GET', '/api/auth/me', tWA)).body.user.walletBalance;
+  ok(Number(walletA2) === 52, `工人A 钱包累计到账 ¥${walletA2}（40 + 12）`);
+  const myApps = (await req('GET', '/api/my/applications', tWA)).body;
+  const cancelledApp = myApps.find((a) => a.jobId === compJob3.id);
+  ok(cancelledApp && cancelledApp.compensation && cancelledApp.compensation.status === 'PAID',
+    '工人「我的任务」可见取消赔付到账状态');
+
+  // 12.7 两次取消后：风险等级 L5（取消率 67% + 有责争议率 33% + 拒付）→ 保证金倍率 3.0，排序分进一步下降
+  const homeFinal = (await req('GET', '/api/enterprise/home', tEntComp)).body.enterprise;
+  const compJob4 = (await req('POST', '/api/jobs', tEntComp, {
+    title: '下周盘点预备', industry: 'INVENTORY', description: '盘点', location: '张江华润万家',
+    lat: 31.2304, lng: 121.4737,
+    startTime: new Date(Date.now() + 4 * 86400000).toISOString().slice(0, 19),
+    endTime: new Date(Date.now() + 4 * 86400000 + 5 * 3600000).toISOString().slice(0, 19),
+    headcount: 1, skillRequirement: '无', dailyWage: 200,
+  })).body;
+  ok(Number(homeFinal.riskLevel) === 5 && Number(compJob4.depositRequired) === 300,
+    `取消率进入风险画像：等级 L${homeFinal.riskLevel}，新发单保证金 100×3.0 = ¥${compJob4.depositRequired}`);
+  const hall2 = (await req('GET', '/api/jobs', tWorker1)).body;
+  const hallJob2b = hall2.find((j) => j.id === compJob2.id);
+  ok(hallJob2b && Number(hallJob2b.rankScore) < 86, `第二次取消后排序分降至 ${hallJob2b?.rankScore}（< 86）`);
+
   console.log(`\n========== 结果：${pass} 通过 / ${fail} 失败 ==========`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => {

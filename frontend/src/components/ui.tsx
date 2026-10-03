@@ -47,6 +47,16 @@ export function RiskLevel({ level }: { level: number }) {
   return <Badge tone={tone as any}>风险 L{level}</Badge>;
 }
 
+// 企业近期稳定性提示（取消率进入排序模型后，工人报名前可见）
+export function StabilityBadge({ s }: { s: any }) {
+  if (!s) return null;
+  const tone = s.level === 'STABLE' ? 'green' : s.level === 'CAUTION' ? 'orange' : 'red';
+  const text = s.level === 'STABLE'
+    ? `近${s.recentWindowDays}天无取消`
+    : `近${s.recentWindowDays}天取消${s.recentCancelled}/${s.recentJobs}单`;
+  return <Badge tone={tone as any}>{text}{s.compRefusals > 0 ? '·有拒付记录' : ''}</Badge>;
+}
+
 export function EventTypeTag({ type }: { type: string }) {
   const map: Record<string, string> = {
     OVERTIME: '临时加班', POSITION_CHANGE: '岗位调换', EARLY_LEAVE: '工人早退',

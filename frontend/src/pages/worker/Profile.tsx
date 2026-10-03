@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { post } from '../../api';
 import { useAuth } from '../../auth';
-import { Alert, Badge, Field, Face } from '../../components/ui';
+import { Alert, Badge, Field, Face, fmtMoney } from '../../components/ui';
 
 export default function Profile() {
   const { user, refresh } = useAuth();
@@ -47,6 +47,11 @@ export default function Profile() {
                 : <Badge tone="gray">无健康证</Badge>}
               {user?.hasFaceSample ? <Badge tone="green">人脸已采集</Badge> : <Badge tone="orange">未采集人脸</Badge>}
             </div>
+          </div>
+          <div className="spacer" />
+          <div style={{ textAlign: 'right' }}>
+            <div className="small muted">钱包余额（取消赔付等到账）</div>
+            <div className="money" style={{ fontSize: 22 }}>{fmtMoney(user?.walletBalance ?? 0)}</div>
           </div>
         </div>
       </div>
